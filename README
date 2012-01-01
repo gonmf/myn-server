@@ -1,0 +1,360 @@
+
+    This file is part of myn.
+
+    myn is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    myn is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with myn.  If not, see <http://www.gnu.org/licenses/>.
+
+
+
+--------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+For release information see ../inc/release.h.
+
+Index
+
+	0. Introduction
+
+	1. Set-up
+
+	2. Content organization
+
+	3. Request handling
+
+	4. Compiled content - web designer perspective
+
+	5. Compiled content - programmer perspective
+
+	6. CGI content
+
+	7. Further HTTP/1.1 options
+
+	8. Server tweaking
+
+	9. FAQ
+
+0. Introduction
+
+	The myn web server is capable of serving HTTP requests by delegating
+	responsibility to dynamically loadable executable files, as well as serving
+	static content and error documents and using CGI modules to interpret files
+	in a scripting language.
+
+
+1. Set-up
+
+	First you need to compile the main source, running make(1).
+	You will need root permissions if the desired port is bellow 1024 (80 is
+	the default port).
+	More tools and examples are present in the 'extra' folder with this
+	distribution.
+	To set up your content read the next section.
+
+	The program accepts two parameters: the port number, if you want to specify
+	something different from the default one (80); and a -d flag to run the
+	program as a daemon.
+
+	You should also take a quick peak at the ../inc/customize.h header file.
+	It is very interesting.
+
+2. Content organization
+
+	Next follows a list of directories whose content will be accessible to
+	visitors.
+
+	./server/content/static		For files to be returned directly to the
+							user-agent
+	./server/content/compiled	For shared object files to be executed and
+							it's output to be returned to the user-agent
+	./server/errordocuments		For ErrorDocument files to be returned when
+							the associated code is returned instead of
+							other content
+	./server/content/cgi-bin		For scripts and other miscellanea files
+							usable by CGI modules
+
+	On rules about which file from which directory is returned read the next
+	section.
+
+	Other interesting folders include:
+
+	./server/cgimodules	For placing modules that can interpret CGI scripts
+	./tmp			For swap data used in gzip compression and intermediate
+					operations.
+
+3. Request handling:
+
+	Files in the above four directories will compete to be delivered,
+	following the next rules, following a descending order of priority:
+
+		1.	The request URI is 'translated' into a compiled resource
+			location, if it exists translation is complete. If it doesn't the
+			request URI is translated into a cgi script resource location,
+			if it exists translation is complete. If not the request URI is
+			translated into a static resource. If not found then an
+			ErrorDocument file is returned. If the ErrorDocument file is not
+			found the server fails silently.
+
+		2.	A resource translation is not always the same, for static content
+			and CGI scripts it is exactly the same as the uri string.
+			For compiled content it is parsed before-hand to pass it's
+			arguments in the common argc/argv form. You can read more about
+			this in section 5.
+
+		3.	For CGI and compiled content data is written on a file that is
+			later fed to the client socket after additional encoding.
+
+
+4. Compiled content - web designer perspective
+
+	PEOPLE INTERESTED IN COMPILED PAGES, CGI SCRIPS AND SCGI MODULES READ
+	../inc/prototype.h
+
+	URI parameters are specified by the symbol '$' (default), this symbol marks
+	everything after as the n-th parameter until the end of the URI or another
+	'$' symbol. As such a URI such as www.url.com/$aeiou$/arg=$4 will cause a
+	search for a dynamic file in server/content/compiled/$/arg=$, note
+	server/content/compiled/$/ is a directory, not part of the file name and
+	arg=$ is the name of the compiled file.
+
+	Also note that if an argument is at the end of the URI then the trailing
+	'$' is not needed; www.url.com/$123 is equivalent to www.url.com/$123$
+
+	Finally note that having the '$' following another '$' is an illegal
+	construct and as such you cannot pass zero-length arguments. If you end a
+	request URI with '$' without the argument it will just be ignored.
+
+	If a dynamic page executes and does not finish successfully it should
+	return the most appropriate HTTP code response.
+
+	Note that the body content of a request is accessible in a field when the
+	request type is POST. This field can be used to retrieve information from a
+	form. This field should be only read and not written.
+
+5. Compiled content - programmer perspective
+
+	PEOPLE INTERESTED IN COMPILED PAGES, CGI SCRIPS AND SCGI MODULES READ
+	../inc/prototype.h
+
+	You should understand the tremendous extra burden of dynamic content in
+	comparison to static content handling.
+
+	Compiled content pages are position independent shared dynamically linked
+	object files that possess entry point functions that are called to generate
+	the response headers and body for an HTTP request.
+
+	5.1 Entry and calling
+
+		The calling will be made standard C-style, as in - cdecl.
+
+		To simplify it is assumed you don't need to set or read the headers so
+		the arguments given to the entry point functions have that information
+		'hidden'.
+
+		If you want to read more about setting and getting HTTP header files
+		read section 6. Further HTTP/1.1 options.
+
+		Note a loader_args structure contains an array of buffers and a
+		no_body field.
+
+		Please do not free(3) or modify the buffers, they are stack based.
+
+		The no_body field can be used to select to ignore the program output
+		and return only the headers or to return the usual ErrorDocument
+		instead of the body
+		.
+		If you plan to not return a body then setting no_body to 1 is an
+		important optimization.
+
+		Unless otherwise noted all buffers and fields are passed zeroed in the
+		first byte and	allocated.
+
+	5.2 Processing
+
+		Understand that your dynamic page will be executed in an environment
+		of high concurrency. Using functions that are not thread safe such as
+		strtok(3) is highly discouraged.
+
+		Also note the server works on a one-process-many-threads model and
+		extra thought should be put into stability.
+
+		To add data to the content body just write to the out_body field
+		provided as part of the argument.
+
+		If you need a special kind of content body to be returned read how to
+		set header files accordingly since the content type is not
+		automatically discovered; only the content-length.
+
+
+	5.3 Returning and cleanup
+
+		The entry point function needs not return anything and needs not to
+		perform any cleanup other than freeing any resource reserved by itself
+		and preventing memory leakages and system locks.
+		Notice that if a piece of code doesn't return then the whole worker
+		thread will be locked; the server will continue to work only while it
+		has worker threads that are not locked by whatever faulty code.
+
+		Notice the return code should be a valid HTTP code (unless you know
+		the user-agent expects otherwise, you probably should make
+		ErrorDocuments for new HTTP response codes if you do).
+
+
+	You can also maintain state without the need for an external process or
+	database. Supported inside the request in the HTTP Context there is an
+	unmanaged field 'reentrant'. If you wish to set state you can allocate and
+	set this field the first time your dynamic page is called and you have the
+	guarantee this field will be maintained between calls.
+	This field points to NULL on unassigned, of type void *, so you can for
+	instance:
+		*((void**)(ctx->reentrant)) = (void *)malloc(.....);
+	Which is to assume the memory pointed by the symbol to be a pointer to
+	shared memory.
+
+	ATTENTION: Given the multiple thread environment it is wise to allocate
+	space for a mutex or other synchronization structure within the reentrant
+	memory segment, checking against NULL everytime the program is executed to
+	see if it's the first type the script/compiled code runs.
+
+6. CGI content
+
+	PEOPLE INTERESTED IN COMPILED PAGES, CGI SCRIPS AND SCGI MODULES READ
+	../inc/prototype.h
+
+	CGI content is served via precompiled CGI modules. These modules must be
+	present in server/cgimodules on startup and are loaded automatically.
+	They must implement the prototype.h definitions and should basically either
+	treat a request or return the appropriate code indicating the worker thread
+	to try another module.
+
+	If the module decides it is well suited to handle requests on that URI
+	(int request_uri) and HTTP method (present in the http context_t str) then
+	the output should be the file descriptor (int out_body) and headers if any
+	set in the request context structure expanded from the arguments structure
+	present (loader_args_t * args).
+
+	Notice that the tweaks presented for compiled content that you are able to
+	achieve through the above structure can still be done inside a CGI module.
+
+
+7. Further HTTP/1.1 options
+
+	As said before the struct loader_args passed as parameter to compiled pages
+	or CGI modules is part of a more complete struct http_context.
+
+	This struct contains all the headers from the request and should contain
+	the response requests.
+	When a dynamic page is called some default response headers will already be
+	set.
+
+	To access this structure you can do something like
+
+		http_context * context = (http_context *)((void *)args +
+							sizeof(loader_args) - sizeof(http_context));
+
+	or equivalent.
+
+	If you manually set the response fields please do not set the
+	content-length field; this field is automatically generated on default
+	and it is generally a good idea to not set it manually - DO SET
+	CONTENT-TYPE THOUGH.
+
+	Request headers and the arguments passed to the function should not be
+	modified though.
+
+	Note the response and request headers consist of arrays of buffers of size
+	specified in src/Extension/Prototype.h zeroed or with the request headers
+	set. You can set the values of those headers but know that affecting the
+	request headers will not affect anything and that you CANNOT call free on
+	those buffers (or any buffers for that matter).
+
+	By default it is assumed dynamic pages return a content body, if they don't
+	then 0 bytes will be sent but there will still be some costly file reads.
+	This can be changed setting the field no_body in the struct passed as
+	parameter.
+	For optimization if your dynamic page does not return a body you should set
+	the appropriate field to 1. If your dynamic page does not return a body but
+	you want the default ErrorDocument to be returned instead of nothing then
+	set the field to 2.
+	For more information refer to your prototype.h file.
+
+
+8. Server tweaking
+
+	As said before the most interesting options are set in customize.h. You
+	should review this header file carefully.
+
+	If you expect requests to be somewhat well-formed you should probably
+	lower buffer sizes, as well as there needs not be more arguments accepted
+	than your dynamic page with the most arguments accepts.
+
+	If you are going to serve a lot of big files then a speeding-up technique
+	consists in disabling checking for compressing candidates.
+
+	Note this is all set in customize.h
+
+	Also note that the server runs with a minimum of two threads:
+		terminal listener
+		connections listener
+		one worker thread (minimum)
+
+	8.1 Content-encoding
+
+		For now the only compression method available is a piped call to	gzip.
+		You can turn off all compression and set the maximum size of files to
+		be compressed on the worker.h header file.
+		Note that the related response header is set automatically and as such
+		should not be set by CGI or compiled code. If you want to return with
+		another encoding then you should turn off encoding and set the header
+		manually.
+
+	8.2 Big and small files processing
+
+		The read-write method of reading a file from disk and sending it to
+		the destination socket is done in a low-latency, user-mode
+		asynchronous way. This means making the stream buffers bigger doesn't
+		necessarily mean any performance gains.
+
+		If you are aiming for maximum speed you should test downloading speeds
+		for uncached files of big sizes with buffer lengths ranging from
+		4KiB - 64KiB, and seeing for yourself which is the best.
+
+9. FAQ
+
+	Q: When I execute the server without root permissions it seems to fail to
+	write temporary chunks of data.
+
+	R: This happens if your previous execution had root privileges, the created
+	chunks of data will have their owner, to prevent this just delete the
+	contents of your myn/tmp directory prior to execution.
+
+	Q: Where can I find CGI modules online, your distribution doesn't include
+	any.
+
+	R: So far CGI calls have shown to be so expensive that I haven't released
+	any module, to foster compiled content usage instead. As I investigate more
+	performance sensible implementations I plan to at least release a general
+	purpose module for piping system calls, we'll see.
+
+	Q: I'm interested in porting myn to another operating system, how can I do
+	this?
+
+	R: You need to rewrite/replace the files system.c, system.h and gnu.h in
+	accordance.
+
+
